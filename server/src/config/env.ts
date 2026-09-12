@@ -32,6 +32,8 @@ const envSchema = z
     TMDB_BASE_URL: z.string().url().default("https://api.themoviedb.org/3"),
     TMDB_IMAGE_BASE_URL: z.string().url().default("https://image.tmdb.org/t/p"),
     TMDB_TIMEOUT_MS: z.coerce.number().int().positive().default(8000),
+    GEMINI_API_KEY: z.string().optional().default(""),
+    GEMINI_MODEL: z.string().default("gemini-2.5-flash"),
 
     // Rate Limiting Configuration (Configurable thresholds)
     RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(15 * 60 * 1000), // 15 minutes
@@ -51,6 +53,14 @@ const envSchema = z
         path: ["TMDB_API_KEY"],
       });
     }
+
+    if (data.NODE_ENV === "production" && !data.DATABASE_URL) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "DATABASE_URL is required in production",
+        path: ["DATABASE_URL"],
+      });
+    }
   });
 
 const parsedEnv = envSchema.safeParse(process.env);
@@ -68,12 +78,14 @@ const safeData = parsedEnv.success
       NODE_ENV: (process.env.NODE_ENV as "development" | "test" | "production") ?? "development",
       PORT: Number(process.env.PORT ?? 5000),
       DATABASE_URL: process.env.DATABASE_URL ?? "",
-      MOVIE_PROVIDER: (process.env.MOVIE_PROVIDER as "mock" | "tmdb") ?? "mock",
+      MOVIE_PROVIDER: (process.env.MOVIE_PROVIDER as "mock" | "tmdb") ?? "tmdb",
       TMDB_API_KEY: process.env.TMDB_API_KEY ?? "",
       TMDB_ACCESS_TOKEN: process.env.TMDB_ACCESS_TOKEN ?? "",
       TMDB_BASE_URL: process.env.TMDB_BASE_URL ?? "https://api.themoviedb.org/3",
       TMDB_IMAGE_BASE_URL: process.env.TMDB_IMAGE_BASE_URL ?? "https://image.tmdb.org/t/p",
       TMDB_TIMEOUT_MS: Number(process.env.TMDB_TIMEOUT_MS ?? 8000),
+      GEMINI_API_KEY: process.env.GEMINI_API_KEY ?? "",
+      GEMINI_MODEL: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
       RATE_LIMIT_WINDOW_MS: Number(process.env.RATE_LIMIT_WINDOW_MS ?? 15 * 60 * 1000),
       RATE_LIMIT_MAX_REQUESTS: Number(process.env.RATE_LIMIT_MAX_REQUESTS ?? 100),
       WISHLIST_RATE_LIMIT_WINDOW_MS: Number(process.env.WISHLIST_RATE_LIMIT_WINDOW_MS ?? 60 * 1000),
@@ -95,6 +107,10 @@ export const env = {
     baseUrl: safeData.TMDB_BASE_URL,
     imageBaseUrl: safeData.TMDB_IMAGE_BASE_URL,
     timeoutMs: safeData.TMDB_TIMEOUT_MS,
+  },
+  gemini: {
+    apiKey: safeData.GEMINI_API_KEY,
+    model: safeData.GEMINI_MODEL,
   },
   rateLimit: {
     general: {

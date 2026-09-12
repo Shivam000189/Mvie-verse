@@ -2,12 +2,12 @@ import { tmdbService } from "../services/tmdb.service";
 import { env } from "../config/env";
 import { TmdbError } from "../utils/tmdb-error";
 
+// TMDB Service integration test runner
 async function runTmdbTest() {
   console.log("=========================================");
   console.log("🎬 TMDB Service Integration Test");
   console.log("=========================================");
   console.log(`Base URL: ${env.tmdb.baseUrl}`);
-  console.log(`Image Base URL: ${env.tmdb.imageBaseUrl}`);
   console.log(`Timeout: ${env.tmdb.timeoutMs}ms`);
   console.log(
     `Auth method configured: ${
@@ -24,7 +24,6 @@ async function runTmdbTest() {
   }
 
   try {
-    // Test 1: Fetch Popular Movies
     console.log("\n[Test 1] Fetching popular movies (page 1)...");
     const popularData = await tmdbService.getPopularMovies(1);
     console.log(`✅ Success! Page: ${popularData.page}, Total Results: ${popularData.total_results}, Movies returned: ${popularData.results.length}`);
@@ -32,10 +31,7 @@ async function runTmdbTest() {
     const firstMovie = popularData.results[0];
     if (firstMovie) {
       console.log(`Sample movie: "${firstMovie.title}" (ID: ${firstMovie.id}, Rating: ${firstMovie.vote_average})`);
-      console.log(`Poster image URL: ${tmdbService.buildImageUrl(firstMovie.poster_path, "w500")}`);
-      console.log(`Backdrop image URL: ${tmdbService.buildImageUrl(firstMovie.backdrop_path, "w780")}`);
 
-      // Test 2: Fetch Movie Details
       console.log(`\n[Test 2] Fetching movie details for ID ${firstMovie.id} ("${firstMovie.title}")...`);
       const details = await tmdbService.getMovieDetails(firstMovie.id);
       console.log(`✅ Details retrieved successfully!`);
@@ -45,7 +41,6 @@ async function runTmdbTest() {
       console.log(`- Genres: ${details.genres.map((g) => g.name).join(", ")}`);
     }
 
-    // Test 3: Error Handling with invalid movie ID
     console.log("\n[Test 3] Testing error handling with non-existent movie ID (999999999)...");
     try {
       await tmdbService.getMovieDetails(999999999);

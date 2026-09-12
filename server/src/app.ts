@@ -6,6 +6,7 @@ import { env, isProduction } from "./config/env";
 import { sendSuccess } from "./utils/api-response";
 import movieRoutes from "./routes/movie.routes";
 import wishlistRoutes from "./routes/wishlist.routes";
+import chatRoutes from "./routes/chat.routes";
 import { notFoundMiddleware } from "./middleware/not-found.middleware";
 import { errorMiddleware } from "./middleware/error.middleware";
 import { requestLoggerMiddleware } from "./middleware/logger.middleware";
@@ -39,7 +40,7 @@ app.use(
       }
 
       if (env.corsOrigins.length === 0) {
-        return callback(null, true);
+        return callback(null, !isProduction);
       }
 
       const normalizedOrigin = origin.replace(/\/$/, "");
@@ -76,6 +77,7 @@ app.use("/api", generalApiLimiter.middleware());
 // 9. Application Feature Routes
 app.use("/api/movies", movieRoutes);
 app.use("/api/wishlist", wishlistRoutes);
+app.use("/api/chat", chatRoutes);
 
 // 10. 404 Not Found Middleware (catches unhandled routes)
 app.use(notFoundMiddleware);
