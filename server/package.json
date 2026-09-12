@@ -1,0 +1,43 @@
+{
+  "name": "server",
+  "version": "1.0.0",
+  "description": "Movie Discovery App Backend",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "ts-node-dev --respawn src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:studio": "prisma studio",
+    "db:seed": "ts-node src/scripts/seed-db.ts",
+    "test:db": "ts-node src/scripts/test-db.ts",
+    "test:tmdb": "ts-node src/scripts/test-tmdb.ts",
+    "test:api": "ts-node src/scripts/test-api.ts",
+    "test:step6": "ts-node src/scripts/test-step6.ts",
+    "test:wishlist": "ts-node src/scripts/test-wishlist.ts",
+    "postinstall": "prisma generate"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@prisma/client": "^6.19.3",
+    "axios": "^1.7.9",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.6.0",
+    "prisma": "^6.19.3",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.8.2"
+  }
+}
