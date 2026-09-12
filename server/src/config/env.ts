@@ -32,6 +32,15 @@ const envSchema = z
     TMDB_BASE_URL: z.string().url().default("https://api.themoviedb.org/3"),
     TMDB_IMAGE_BASE_URL: z.string().url().default("https://image.tmdb.org/t/p"),
     TMDB_TIMEOUT_MS: z.coerce.number().int().positive().default(8000),
+
+    // Rate Limiting Configuration (Configurable thresholds)
+    RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(15 * 60 * 1000), // 15 minutes
+    RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().default(100),
+    WISHLIST_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60 * 1000), // 1 minute
+    WISHLIST_RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().default(30),
+    AUTH_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(15 * 60 * 1000), // 15 minutes
+    AUTH_RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().default(5),
+    AUTH_BACKOFF_BASE_MS: z.coerce.number().int().positive().default(1000), // 1 second base delay
   })
   .superRefine((data, ctx) => {
     // Only require TMDB credentials if TMDB provider is explicitly chosen
@@ -65,6 +74,13 @@ const safeData = parsedEnv.success
       TMDB_BASE_URL: process.env.TMDB_BASE_URL ?? "https://api.themoviedb.org/3",
       TMDB_IMAGE_BASE_URL: process.env.TMDB_IMAGE_BASE_URL ?? "https://image.tmdb.org/t/p",
       TMDB_TIMEOUT_MS: Number(process.env.TMDB_TIMEOUT_MS ?? 8000),
+      RATE_LIMIT_WINDOW_MS: Number(process.env.RATE_LIMIT_WINDOW_MS ?? 15 * 60 * 1000),
+      RATE_LIMIT_MAX_REQUESTS: Number(process.env.RATE_LIMIT_MAX_REQUESTS ?? 100),
+      WISHLIST_RATE_LIMIT_WINDOW_MS: Number(process.env.WISHLIST_RATE_LIMIT_WINDOW_MS ?? 60 * 1000),
+      WISHLIST_RATE_LIMIT_MAX_REQUESTS: Number(process.env.WISHLIST_RATE_LIMIT_MAX_REQUESTS ?? 30),
+      AUTH_RATE_LIMIT_WINDOW_MS: Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS ?? 15 * 60 * 1000),
+      AUTH_RATE_LIMIT_MAX_REQUESTS: Number(process.env.AUTH_RATE_LIMIT_MAX_REQUESTS ?? 5),
+      AUTH_BACKOFF_BASE_MS: Number(process.env.AUTH_BACKOFF_BASE_MS ?? 1000),
     };
 
 export const env = {
@@ -79,6 +95,21 @@ export const env = {
     baseUrl: safeData.TMDB_BASE_URL,
     imageBaseUrl: safeData.TMDB_IMAGE_BASE_URL,
     timeoutMs: safeData.TMDB_TIMEOUT_MS,
+  },
+  rateLimit: {
+    general: {
+      windowMs: safeData.RATE_LIMIT_WINDOW_MS,
+      maxRequests: safeData.RATE_LIMIT_MAX_REQUESTS,
+    },
+    wishlist: {
+      windowMs: safeData.WISHLIST_RATE_LIMIT_WINDOW_MS,
+      maxRequests: safeData.WISHLIST_RATE_LIMIT_MAX_REQUESTS,
+    },
+    auth: {
+      windowMs: safeData.AUTH_RATE_LIMIT_WINDOW_MS,
+      maxRequests: safeData.AUTH_RATE_LIMIT_MAX_REQUESTS,
+      backoffBaseMs: safeData.AUTH_BACKOFF_BASE_MS,
+    },
   },
 };
 

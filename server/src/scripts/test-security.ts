@@ -1,6 +1,10 @@
 import type { Server } from "http";
 import app from "../app";
-import { InMemoryRateLimiter, generalApiLimiter } from "../middleware/rate-limit.middleware";
+import {
+  InMemoryRateLimiter,
+  generalApiLimiter,
+  ExponentialBackoffRateLimiter,
+} from "../middleware/rate-limit.middleware";
 import { movieService } from "../services/movie.service";
 import { MockMovieProvider } from "../providers/mock-movie.provider";
 
@@ -108,9 +112,9 @@ export async function runSecurityTests(): Promise<{ passed: number; failed: numb
     );
 
     // ----------------------------------------------------
-    // 4. Rate Limiting Protection
+    // 4. Rate Limiting Protection & Exponential Backoff
     // ----------------------------------------------------
-    console.log("\n[Group 4] Rate Limiting Protection");
+    console.log("\n[Group 4] Rate Limiting Protection & Exponential Backoff");
 
     const testLimiter = new InMemoryRateLimiter({
       windowMs: 1000,
@@ -142,10 +146,79 @@ export async function runSecurityTests(): Promise<{ passed: number; failed: numb
       "Rate limiter blocks requests exceeding maxRequests threshold and returns 429 RATE_LIMITED"
     );
 
+    // Test Exponential Backoff Limiter
+    const authBackoffLimiter = new ExponentialBackoffRateLimiter({
+      windowMs: 5000,
+      maxAttempts: 2,
+      backoffBaseMs: 500,
+      maxBackoffMs: 10000,
+      accountKeyExtractor: (req) => (req.body as any)?.email,
+    });
+
+    // Record 2 failures (threshold)
+    authBackoffLimiter.recordFailure("acc:test@example.com");
+    const retrySecs1 = authBackoffLimiter.recordFailure("acc:test@example.com");
+
+    const authReq: any = {
+      ip: "10.0.0.1",
+      socket: {},
+      body: { email: "test@example.com" },
+    };
+    let authBlocked = false;
+    let authRetryAfter = 0;
+
+    const authResMock: any = {
+      setHeader(name: string, val: any) {
+        if (name === "Retry-After") authRetryAfter = val;
+      },
+    };
+
+    authBackoffLimiter.middleware()(authReq, authResMock, (err?: any) => {
+      if (err && err.statusCode === 429 && err.code === "AUTH_RATE_LIMITED") {
+        authBlocked = true;
+      }
+    });
+
+    assert(
+      retrySecs1 > 0 && authBlocked && authRetryAfter > 0,
+      "Exponential backoff rate limiter calculates progressive delays on repeated failures and issues 429"
+    );
+
     // ----------------------------------------------------
-    // 5. Zero Secret & Stack Trace Leakage
+    // 5. Strict Input Validation & Schema Enforcement
     // ----------------------------------------------------
-    console.log("\n[Group 5] Secret Redaction & Safe Error Envelopes");
+    console.log("\n[Group 5] Strict Input Validation & Schema Enforcement");
+
+    // POST /api/wishlist with unwhitelisted extra fields
+    const unwhitelistedBodyRes = await fetch(`${baseUrl}/api/wishlist`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ movieId: 550, unauthorizedField: "malicious_injection" }),
+    });
+    const unwhitelistedBodyJson = await unwhitelistedBodyRes.json();
+
+    assert(
+      unwhitelistedBodyRes.status === 400 &&
+        unwhitelistedBodyJson.success === false &&
+        unwhitelistedBodyJson.error?.code === "INVALID_REQUEST",
+      "Strict schema rejects unrecognized properties in request bodies with 400 INVALID_REQUEST"
+    );
+
+    // GET /api/movies with unwhitelisted query parameter
+    const unwhitelistedQueryRes = await fetch(`${baseUrl}/api/movies?unrecognizedParam=true`);
+    const unwhitelistedQueryJson = await unwhitelistedQueryRes.json();
+
+    assert(
+      unwhitelistedQueryRes.status === 400 &&
+        unwhitelistedQueryJson.success === false &&
+        unwhitelistedQueryJson.error?.code === "INVALID_REQUEST",
+      "Strict schema rejects unrecognized query parameters with 400 INVALID_REQUEST"
+    );
+
+    // ----------------------------------------------------
+    // 6. Zero Secret & Stack Trace Leakage
+    // ----------------------------------------------------
+    console.log("\n[Group 6] Secret Redaction & Safe Error Envelopes");
 
     const error404 = await fetch(`${baseUrl}/api/movies/999999`);
     const json404 = await error404.json();

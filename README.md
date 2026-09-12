@@ -1,89 +1,500 @@
 # 🎬 Movie Discovery App — Backend
 
-A production-ready Full-Stack Intern Assignment backend built with **Node.js**, **Express**, **TypeScript**, **PostgreSQL**, **Prisma ORM**, and the **TMDB API**.
+A production-ready, type-safe REST API for movie discovery and persistent wishlist management, built with **Node.js**, **Express**, **TypeScript**, **PostgreSQL**, **Prisma ORM**, and the **TMDB API** (abstracted behind a provider layer).
+
+> 📌 **Current Status**: The backend foundation, business logic, provider abstraction, caching, centralized error handling, security hardening, and 6-layer automated test suite are **100% complete**. The React + TypeScript frontend will be implemented in the next phase.
 
 ---
 
-## 🏛️ System Architecture
+## 📑 Table of Contents
+
+1. [Project Overview](#-project-overview)
+2. [Key Implemented Features](#-key-implemented-features)
+3. [System Architecture & Layer Responsibilities](#-system-architecture--layer-responsibilities)
+4. [Tech Stack](#-tech-stack)
+5. [Project Directory Structure](#-project-directory-structure)
+6. [Movie Provider Architecture](#-movie-provider-architecture)
+7. [Environment Configuration](#-environment-configuration)
+8. [Local Installation & Setup](#-local-installation--setup)
+9. [Database Setup & Schema Design](#-database-setup--schema-design)
+10. [REST API Reference](#-rest-api-reference)
+11. [Query, Search, Filtering & Pagination](#-query-search-filtering--pagination)
+12. [Centralized Error Handling](#-centralized-error-handling)
+13. [Caching & Performance Architecture](#-caching--performance-architecture)
+14. [Security & Production Readiness](#-security--production-readiness)
+15. [Testing Strategy (6 Layers / 71 Tests)](#-testing-strategy-6-layers--71-tests)
+16. [Developer Scripts](#-developer-scripts)
+17. [Technical Decisions & Trade-Offs](#-technical-decisions--trade-offs)
+18. [Known Limitations & Future Roadmap](#-known-limitations--future-roadmap)
+19. [AI Usage Disclosure](#-ai-usage-disclosure)
+
+---
+
+## 🎯 Project Overview
+
+The **Movie Discovery App** is designed for a software engineering internship assignment to evaluate full-stack architectural design, data normalization, resilience against external API failures, database integrity under concurrency, in-memory caching, security practices, and clean automated testing.
+
+The backend exposes an application-owned REST API. The external provider (TMDB) remains strictly decoupled behind an `IMovieProvider` abstraction. During development and testing, an offline deterministic `MockMovieProvider` is used, allowing the entire system to run and pass all test suites without external API keys or active internet access.
+
+---
+
+## 🚀 Key Implemented Features
+
+* **Movie Discovery & Catalog Exploration**: Paginated movie listings supporting discovery mode and keyword search.
+* **Multi-Attribute Filtering**: Filter movies simultaneously by genre ID and release year.
+* **Strict Sorting Whitelist**: Sort results by `popularity` (default), `rating`, `release_date`, or `title`.
+* **Bounded Pagination**: Enforces safe limits (`page >= 1`, `1 <= limit <= 20`) to prevent denial-of-service memory spikes.
+* **Detailed Movie Metadata**: Full metadata including runtime, budget, revenue, tagline, IMDb ID, genres, and poster/backdrop paths.
+* **Persistent Wishlist**: Add, view, check status, and remove movies from a persistent PostgreSQL database.
+* **Concurrency & Race Condition Guard**: Database-level unique constraint (`@unique` on `movieId`) atomically prevents duplicate wishlist entries during simultaneous requests.
+* **Provider Abstraction Layer**: Decouples domain logic from TMDB; allows runtime provider switching (`MockMovieProvider` vs `TmdbMovieProvider`).
+* **In-Memory Caching & LRU Eviction**: Domain-specific TTLs (1h genres, 10m details, 2m listings) with bounded sizes and LRU eviction.
+* **In-Flight Request Coalescing**: Prevents cache stampedes / dog-piling by multiplexing concurrent requests for identical uncached keys onto a single upstream execution.
+* **Error Non-Caching Policy**: Transient upstream errors (timeouts, 503s) are never cached, enabling instant recovery.
+* **Centralized Error Handling**: Standardized error envelope `{ success: false, error: { code, message }, timestamp }` with complete stack trace redaction in production.
+* **Security Hardening**: OWASP security headers (`nosniff`, `DENY`, CSP), 10KB body limit (`413`), 100-character search bounds, and in-memory rate limiting (`429`).
+* **Multi-Layer Automated Testing**: 71 automated tests across 6 testing layers (Unit, Provider, Service, API Integration, Database, Security).
+
+---
+
+## 🏛️ System Architecture & Layer Responsibilities
+
+```
+                                 HTTP Client Request (React / curl)
+                                                │
+                                                ▼
+                                   [OWASP Security Headers]
+                                                │
+                                                ▼
+                                     [Rate Limiting (429)]
+                                                │
+                                                ▼
+                                    [Body Parser (10KB max)]
+                                                │
+                                                ▼
+                                   [Zod Input Validation (400)]
+                                                │
+                                                ▼
+                                    [Express Route Matching]
+                                                │
+                                                ▼
+                                      [Thin Controllers]
+                                                │
+                                                ▼
+                                      [Domain Services]
+                                       │              │
+                    ┌──────────────────┴──┐        ┌──┴────────────────┐
+                    ▼                     ▼        ▼                   ▼
+           [In-Memory Cache]     [Movie Provider] [Prisma Client]  [PostgreSQL]
+           (TTL, LRU, Coalescing) (Mock / TMDB)    (ORM queries)    (Persistence)
+                    │                     │        │                   │
+                    └─────────────────────┼────────┴───────────────────┘
+                                          │ (Controlled AppError or Success)
+                                          ▼
+                             [Central Error Middleware]
+                                          │ (Sanitizes internals & formats envelope)
+                                          ▼
+                                Standard JSON Response
+```
+
+### Layer Responsibilities
+
+| Layer | Primary Files | Responsibilities |
+| :--- | :--- | :--- |
+| **Routes** | `src/routes/*.ts` | Defines endpoint paths and maps HTTP verbs (`GET`, `POST`, `DELETE`) to controller actions. |
+| **Validators / Schemas** | `src/schemas/*.ts` | Validates and coerces query params, route parameters, and request bodies using Zod before controller execution. |
+| **Controllers** | `src/controllers/*.ts` | Thin HTTP handlers. Reads validated input, calls services, chooses HTTP status codes (`200`, `201`, `400`, `404`, `409`), and returns standard envelopes. |
+| **Services** | `src/services/*.ts` | Contains core business logic, coordinates caching, orchestrates provider calls, manages database persistence, and translates low-level errors. |
+| **Providers** | `src/providers/*.ts` | Implements `IMovieProvider`. Handles provider-specific communication, raw pagination, and payload normalization. |
+| **Database (Prisma)** | `prisma/schema.prisma` | Type-safe database queries, migrations, and atomic PostgreSQL constraints. |
+| **Middleware** | `src/middleware/*.ts` | Request logging, OWASP security headers, CORS verification, in-memory rate limiting, 404 unmapped route interception, and centralized error handling. |
+
+---
+
+## 💻 Tech Stack
+
+* **Runtime**: Node.js (`v20+` or `v22+`)
+* **Framework**: Express.js (`v5.2.1`)
+* **Language**: TypeScript (`v5.8.2`) in strict mode
+* **Database**: PostgreSQL (Neon Cloud / Local PostgreSQL)
+* **ORM**: Prisma (`v6.19.3`)
+* **Validation**: Zod (`v4.3.6`)
+* **HTTP Client**: Axios (`v1.7.9`) with 8000ms timeouts
+* **Middleware**: CORS, Compression (gzip/deflate), Custom Security Headers, Custom Rate Limiter
+* **Testing**: TypeScript script-based test runners with native Node.js asynchronous execution
+
+---
+
+## 📂 Project Directory Structure
 
 ```text
-React Client (Future Frontend)
-     │
-     ▼
-[Express Routes]        (/api/movies, /api/wishlist, /api/health)
-     │
-     ▼
-[Zod Schemas]           (Runtime type validation & input coercion)
-     │
-     ▼
-[Controllers]           (Thin HTTP handlers, status codes, response wrappers)
-     │
-     ├── Movie Queries  ──► [Movie Service]    ──► [TMDB Service] ──► TMDB API
-     │                                                     │
-     │                                                     ▼
-     │                                              [Movie Mapper]
-     │
-     └── Wishlist Ops   ──► [Wishlist Service] ──► [Prisma Client] ──► PostgreSQL
-                                  │
-                                  └── (Hydrate movie metadata via Movie Service)
+server/
+├── prisma/
+│   ├── migrations/              # Prisma SQL migration history
+│   └── schema.prisma            # PostgreSQL schema definition (Wishlist model)
+│
+├── src/
+│   ├── clients/                 # (Optional raw client wrappers)
+│   ├── config/
+│   │   ├── database.ts          # PrismaClient singleton instance
+│   │   ├── env.ts               # Startup environment validation with Zod
+│   │   └── tmdb.ts              # Axios instance configured with TMDB headers & timeout
+│   │
+│   ├── controllers/
+│   │   ├── movie.controller.ts  # Movie listing, search, details, and genre endpoints
+│   │   └── wishlist.controller.ts # Wishlist CRUD endpoints
+│   │
+│   ├── middleware/
+│   │   ├── error.middleware.ts  # Centralized error handler & status mapper
+│   │   ├── logger.middleware.ts # HTTP request performance & duration logger
+│   │   ├── not-found.middleware.ts # 404 ROUTE_NOT_FOUND handler
+│   │   ├── rate-limit.middleware.ts # Sliding-window in-memory rate limiter
+│   │   └── security.middleware.ts # OWASP HTTP security headers (nosniff, DENY, CSP)
+│   │
+│   ├── providers/
+│   │   ├── failing-movie.provider.ts # Upstream error & timeout simulation harness
+│   │   ├── mock-movie.provider.ts  # In-memory deterministic mock movie dataset
+│   │   ├── movie-provider.interface.ts # IMovieProvider contract
+│   │   └── tmdb-movie.provider.ts  # Live TMDB API provider adapter
+│   │
+│   ├── routes/
+│   │   ├── movie.routes.ts      # /api/movies routes
+│   │   └── wishlist.routes.ts   # /api/wishlist routes
+│   │
+│   ├── schemas/
+│   │   ├── movie.schema.ts      # Zod validation for query params and :id
+│   │   └── wishlist.schema.ts   # Zod validation for wishlist body and :movieId
+│   │
+│   ├── scripts/                 # Automated test suites & database scripts
+│   │   ├── run-all-tests.ts     # Master test runner (all 6 layers)
+│   │   ├── seed-db.ts           # PostgreSQL seeding utility
+│   │   ├── test-api-integration.ts # Layer 4: Express HTTP integration tests
+│   │   ├── test-db-integration.ts  # Layer 5: PostgreSQL database persistence tests
+│   │   ├── test-errors.ts       # Step 10 error matrix test
+│   │   ├── test-performance.ts  # Step 9 cache & coalescing test
+│   │   ├── test-providers.ts    # Layer 2: Movie provider contract tests
+│   │   ├── test-security.ts     # Layer 6: Security headers & rate limit tests
+│   │   ├── test-services.ts     # Layer 3: Service business logic tests
+│   │   ├── test-step6.ts        # Step 6 query & filter validation test
+│   │   ├── test-tmdb.ts         # Live TMDB connection test
+│   │   ├── test-unit.ts         # Layer 1: Pure unit tests (Mappers, Zod, AppError)
+│   │   └── test-wishlist.ts     # Step 8 wishlist lifecycle test
+│   │
+│   ├── services/
+│   │   ├── movie.service.ts     # Movie catalog, caching, and coalescing service
+│   │   ├── tmdb.service.ts      # Direct TMDB REST endpoint methods
+│   │   └── wishlist.service.ts  # Wishlist PostgreSQL persistence & metadata hydration
+│   │
+│   ├── types/
+│   │   ├── movie.types.ts       # Application-owned Movie domain models
+│   │   ├── tmdb.types.ts        # Upstream TMDB raw JSON schemas
+│   │   └── wishlist.types.ts    # Wishlist response models
+│   │
+│   ├── utils/
+│   │   ├── api-response.ts      # Standard sendSuccess and sendError helpers
+│   │   ├── app-error.ts         # Standard AppError class & factory helpers
+│   │   ├── cache.ts             # Generic InMemoryCache with TTL, LRU, and coalescing
+│   │   ├── movie.mapper.ts      # Defensive normalizer (TMDB raw -> domain Movie)
+│   │   └── tmdb-error.ts        # TMDB status code classifier
+│   │
+│   ├── app.ts                   # Express application configuration & middleware stack
+│   └── server.ts                # HTTP server bootstrap & graceful shutdown listeners
+│
+├── .env.example                 # Safe environment variables template
+├── .gitignore                   # Git ignore file (strictly ignores .env, node_modules, dist)
+├── package.json                 # Project manifest & npm scripts
+├── tsconfig.json                # TypeScript compiler configuration
+└── README.md                    # Root project documentation
 ```
 
 ---
 
-## 💾 Wishlist Architecture & Data Ownership
+## 🔌 Movie Provider Architecture
 
-### 1. Why only `movieId` is stored in PostgreSQL
-Movie metadata (titles, overviews, ratings, poster paths, backdrops) is owned and constantly updated upstream by TMDB. Storing only the foreign reference `movieId` (and `createdAt`) in PostgreSQL provides:
-* **Zero Data Staleness**: The user always sees the latest ratings, posters, and details without background sync jobs.
-* **Storage Efficiency**: Keeps database size minimal and scalable.
-* **Separation of Concerns**: PostgreSQL manages user state; TMDB manages the movie catalog.
+The backend implements a **Provider Pattern** to decouple application business logic from external third-party APIs.
 
-### 2. Why `movieId` is `@unique` (Race Condition Prevention)
-Relying only on application-level checks (`if (!exists) { create() }`) is vulnerable to Time-Of-Check to Time-Of-Use (TOCTOU) race conditions when concurrent requests hit the server at the exact same millisecond. 
-A database-level `@unique` constraint guarantees atomic uniqueness at the storage engine level. If a duplicate insert occurs, PostgreSQL rejects it, and Prisma returns error `P2002`, which our service maps to HTTP `409 Conflict` (`MOVIE_ALREADY_IN_WISHLIST`).
+```text
+                        ┌──────────────────────────────┐
+                        │         MovieService         │
+                        └──────────────┬───────────────┘
+                                       │ (Depends on interface)
+                                       ▼
+                        ┌──────────────────────────────┐
+                        │      «IMovieProvider»        │
+                        ├──────────────────────────────┤
+                        │ + getMovies(query)           │
+                        │ + getMovieById(id)           │
+                        │ + getGenres()                │
+                        └──────────────▲───────────────┘
+                                       │
+                ┌──────────────────────┴──────────────────────┐
+                │                                             │
+ ┌──────────────┴──────────────┐               ┌──────────────┴──────────────┐
+ │      MockMovieProvider      │               │      TmdbMovieProvider      │
+ ├─────────────────────────────┤               ├─────────────────────────────┤
+ │ • 100% Offline dataset      │               │ • Live TMDB Axios Client    │
+ │ • Zero credentials needed   │               │ • Normalization via Mapper  │
+ │ • Instant execution in CI   │               │ • 8000ms timeout handling   │
+ └─────────────────────────────┘               └─────────────────────────────┘
+```
 
-### 3. Why Controllers never access Prisma directly
-Controllers only handle HTTP-specific concerns (reading params, validating inputs, selecting HTTP status codes `201`/`200`/`404`/`409`, and sending standard JSON envelopes). Business logic, database operations, error translation, and external API cross-referencing belong exclusively in the service layer (`WishlistService`).
+### Why Provider Abstraction?
 
-### 4. Why external provider downtime does not mutate user state
-If TMDB is temporarily slow or a movie is removed upstream, our `WishlistService.getWishlist()` uses `Promise.allSettled()` to provide a graceful fallback representation (`Movie #550 (Metadata temporarily unavailable)`). The user's persistent record in PostgreSQL is **never deleted or corrupted** due to external API failures.
+1. **Testability & Determinism**: Unit and integration tests run against `MockMovieProvider` without making live network requests, eliminating test flakiness and API quota consumption.
+2. **Seamless Upstream Swapping**: Enabling TMDB requires changing only `MOVIE_PROVIDER=tmdb` in `.env`. Controllers, routes, and client responses remain identical.
+3. **Resilience & Fault Isolation**: Upstream TMDB errors (timeouts, rate limits, malformed payloads) are captured and translated inside the provider layer, preventing raw Axios dumps from leaking to clients.
 
 ---
 
-## 📡 Wishlist API Reference
+## ⚙️ Environment Configuration
 
-### 1. Get User Wishlist
+Configuration is managed via `.env` and strictly validated at server startup in `src/config/env.ts`.
+
+| Variable | Type | Default | Required | Description |
+| :--- | :--- | :--- | :---: | :--- |
+| `PORT` | `number` | `5000` | No | HTTP server port. |
+| `NODE_ENV` | `string` | `development` | No | Environment mode (`development`, `test`, `production`). |
+| `CORS_ORIGIN` | `string` | `http://localhost:5173` | No | Comma-separated list of allowed frontend origins. |
+| `DATABASE_URL` | `string` | `""` | **Yes** | PostgreSQL connection string for Prisma. |
+| `MOVIE_PROVIDER` | `string` | `mock` | **Yes** | Active movie provider: `mock` (offline) or `tmdb` (live API). |
+| `TMDB_API_KEY` | `string` | `""` | Conditional | TMDB v3 API Key (required only if `MOVIE_PROVIDER=tmdb`). |
+| `TMDB_ACCESS_TOKEN` | `string` | `""` | Conditional | TMDB v4 Read Access Token (Bearer token). |
+| `TMDB_BASE_URL` | `string` | `https://api.themoviedb.org/3` | No | TMDB REST API root endpoint. |
+| `TMDB_IMAGE_BASE_URL`| `string` | `https://image.tmdb.org/t/p` | No | TMDB CDN base URL for posters and backdrops. |
+| `TMDB_TIMEOUT_MS` | `number` | `8000` | No | Maximum Axios request timeout in milliseconds. |
+
+> 🔒 **Security Notice**: Startup validation enforces TMDB credentials **only** when `MOVIE_PROVIDER=tmdb`. When `MOVIE_PROVIDER=mock`, the server boots cleanly without requiring third-party credentials.
+
+---
+
+## 🛠️ Local Installation & Setup
+
+### 1. Clone & Navigate to Server Directory
+```bash
+git clone https://github.com/Shivam000189/Mvie-verse.git
+cd "Movie Discovery App/server"
+```
+
+### 2. Install Dependencies
+```bash
+npm install
+```
+
+### 3. Create Local Environment Configuration
+```bash
+# On Linux / macOS / Git Bash:
+cp .env.example .env
+
+# On Windows PowerShell:
+Copy-Item .env.example .env
+```
+
+Edit `.env` and configure your `DATABASE_URL`. If you wish to use mock data, keep `MOVIE_PROVIDER=mock`.
+
+---
+
+## 🗄️ Database Setup & Schema Design
+
+### 1. Database Migrations
+Apply the Prisma migration to create the PostgreSQL tables:
+```bash
+npm run db:migrate
+```
+
+### 2. (Optional) Seed Database with Initial Wishlist Records
+```bash
+npm run db:seed
+```
+
+### 3. (Optional) Launch Prisma Studio
+Open the visual database management GUI in your browser:
+```bash
+npm run db:studio
+```
+
+---
+
+### Database Schema (`prisma/schema.prisma`)
+
+```prisma
+model Wishlist {
+  id        Int      @id @default(autoincrement())
+  movieId   Int      @unique
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("wishlists")
+}
+```
+
+### Why only `movieId` is stored in PostgreSQL (Data Ownership)
+
+* **Application-Owned Data**: PostgreSQL stores user intent (which movies are wishlisted and when they were added).
+* **Provider-Owned Data**: Upstream TMDB owns movie metadata (title, overview, poster URL, vote average).
+* **Zero Data Staleness**: Storing only `movieId` ensures users always see the latest ratings and poster paths without requiring background sync jobs.
+* **Storage Efficiency**: Keeps database records lightweight (~30 bytes per entry).
+* **Atomic Race Condition Defense**: The database `@unique` constraint on `movieId` atomically prevents duplicate entries even when concurrent duplicate requests arrive at the same millisecond.
+
+---
+
+## 📡 REST API Reference
+
+All responses return a predictable standard JSON envelope:
+* **Success**: `{ "success": true, "data": ..., "timestamp": "..." }`
+* **Error**: `{ "success": false, "error": { "code": "...", "message": "..." }, "timestamp": "..." }`
+
+### Endpoint Summary Table
+
+| Method | Endpoint | Description | Rate Limit |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/health` | Lightweight server uptime and health check | Excluded |
+| `GET` | `/api/movies` | Discover / search paginated movies with filters and sorting | 100 req / 15 min |
+| `GET` | `/api/movies/:id` | Retrieve full movie details by numeric ID | 100 req / 15 min |
+| `GET` | `/api/movies/genres` | Retrieve available movie genre taxonomy | 100 req / 15 min |
+| `GET` | `/api/wishlist` | Retrieve all wishlisted movies (ordered by newest first) | 100 req / 15 min |
+| `POST` | `/api/wishlist` | Add a movie to the wishlist | 30 req / 1 min |
+| `GET` | `/api/wishlist/:movieId` | Check if a specific movie is in the wishlist | 100 req / 15 min |
+| `DELETE`| `/api/wishlist/:movieId`| Remove a movie from the wishlist | 30 req / 1 min |
+
+---
+
+### 1. Health Check
 ```http
-GET /api/wishlist
+GET /api/health
 ```
 **Response (`200 OK`):**
 ```json
 {
   "success": true,
   "data": {
-    "items": [
-      {
-        "id": 550,
-        "title": "Fight Club",
-        "overview": "An insomniac office worker and a devil-may-care soap maker...",
-        "posterUrl": "https://image.tmdb.org/t/p/w500/pB8BM7pdSp6B6Ih7QZ4DrQ3PmJK.jpg",
-        "backdropUrl": "https://image.tmdb.org/t/p/w780/hZkgoQYus5vegHoetLkCJzb17zJ.jpg",
-        "rating": 8.4,
-        "voteCount": 27000,
-        "releaseDate": "1999-10-15",
-        "genres": [
-          { "id": 18, "name": "Drama" },
-          { "id": 53, "name": "Thriller" }
-        ]
-      }
-    ],
-    "total": 1
+    "status": "ok",
+    "uptime": 142,
+    "timestamp": "2026-09-12T06:00:00.000Z"
   },
-  "timestamp": "2026-09-12T05:00:00.000Z"
+  "timestamp": "2026-09-12T06:00:00.000Z"
 }
 ```
 
-### 2. Add Movie to Wishlist
+---
+
+### 2. Discover & Search Movies
+```http
+GET /api/movies?search=Inception&genre=28&year=2010&sort=rating&page=1&limit=20
+```
+
+| Parameter | Type | Required | Default | Validation Rules |
+| :--- | :--- | :---: | :--- | :--- |
+| `search` | `string` | No | — | Trimmed, maximum 100 characters. |
+| `genre` | `number` | No | — | Positive integer ID (e.g. `28` for Action). |
+| `year` | `number` | No | — | Integer between `1888` and `CURRENT_YEAR + 5`. |
+| `sort` | `string` | No | `popularity` | Whitelist: `popularity`, `rating`, `release_date`, `title`. |
+| `page` | `number` | No | `1` | Integer $\ge 1$. |
+| `limit` | `number` | No | `20` | Integer between `1` and `20`. |
+
+**Response (`200 OK`):**
+```json
+{
+  "success": true,
+  "data": {
+    "movies": [
+      {
+        "id": 27205,
+        "title": "Inception",
+        "overview": "Cobb, a skilled thief who steals corporate secrets through dream-sharing technology...",
+        "posterUrl": "https://image.tmdb.org/t/p/w500/edv5CZvWj09upOsy2Y6IwDhK8bt.jpg",
+        "backdropUrl": "https://image.tmdb.org/t/p/w1280/8ZTVqvKDQ8emSGUEMjsS4yHAwrp.jpg",
+        "rating": 8.3,
+        "voteCount": 35000,
+        "releaseDate": "2010-07-15",
+        "genres": [
+          { "id": 28, "name": "Action" },
+          { "id": 878, "name": "Sci-Fi" },
+          { "id": 12, "name": "Adventure" }
+        ]
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "limit": 20,
+      "totalPages": 1,
+      "totalResults": 1,
+      "hasNextPage": false,
+      "hasPrevPage": false
+    }
+  },
+  "timestamp": "2026-09-12T06:00:00.000Z"
+}
+```
+
+---
+
+### 3. Get Movie Details
+```http
+GET /api/movies/550
+```
+**Response (`200 OK`):**
+```json
+{
+  "success": true,
+  "data": {
+    "movie": {
+      "id": 550,
+      "title": "Fight Club",
+      "overview": "An insomniac office worker and a devil-may-care soap maker form an underground fight club.",
+      "posterUrl": "https://image.tmdb.org/t/p/w500/pB8BM7pdSp6B6Ih7QZ4DrQ3PmJK.jpg",
+      "backdropUrl": "https://image.tmdb.org/t/p/w1280/hZkgoQYus5vegHoetLkCJzb17zJ.jpg",
+      "rating": 8.4,
+      "voteCount": 27500,
+      "releaseDate": "1999-10-15",
+      "genres": [
+        { "id": 18, "name": "Drama" },
+        { "id": 53, "name": "Thriller" }
+      ],
+      "tagline": "Mischief. Mayhem. Soap.",
+      "runtime": 139,
+      "status": "Released",
+      "budget": 63000000,
+      "revenue": 100853753,
+      "homepage": "http://www.foxmovies.com/movies/fight-club",
+      "imdbId": "tt0137523",
+      "originalLanguage": "en"
+    }
+  },
+  "timestamp": "2026-09-12T06:00:00.000Z"
+}
+```
+
+---
+
+### 4. Get Movie Genres Taxonomy
+```http
+GET /api/movies/genres
+```
+**Response (`200 OK`):**
+```json
+{
+  "success": true,
+  "data": {
+    "genres": [
+      { "id": 28, "name": "Action" },
+      { "id": 12, "name": "Adventure" },
+      { "id": 16, "name": "Animation" },
+      { "id": 35, "name": "Comedy" },
+      { "id": 80, "name": "Crime" },
+      { "id": 18, "name": "Drama" },
+      { "id": 14, "name": "Fantasy" },
+      { "id": 27, "name": "Horror" },
+      { "id": 878, "name": "Sci-Fi" },
+      { "id": 53, "name": "Thriller" }
+    ]
+  },
+  "timestamp": "2026-09-12T06:00:00.000Z"
+}
+```
+
+---
+
+### 5. Add Movie to Wishlist
 ```http
 POST /api/wishlist
 Content-Type: application/json
@@ -100,14 +511,61 @@ Content-Type: application/json
     "success": true,
     "message": "Movie added to wishlist",
     "movieId": 550,
-    "addedAt": "2026-09-12T05:00:10.000Z"
+    "addedAt": "2026-09-12T06:00:00.000Z"
   },
   "message": "Movie added to wishlist",
-  "timestamp": "2026-09-12T05:00:10.000Z"
+  "timestamp": "2026-09-12T06:00:00.000Z"
 }
 ```
 
-### 3. Check Movie Wishlist Status
+*Duplicate Attempt (`409 Conflict`):*
+```json
+{
+  "success": false,
+  "error": {
+    "code": "MOVIE_ALREADY_IN_WISHLIST",
+    "message": "Movie is already in the wishlist."
+  },
+  "timestamp": "2026-09-12T06:00:00.000Z"
+}
+```
+
+---
+
+### 6. Get Wishlist
+```http
+GET /api/wishlist
+```
+**Response (`200 OK`):**
+```json
+{
+  "success": true,
+  "data": {
+    "items": [
+      {
+        "id": 550,
+        "title": "Fight Club",
+        "overview": "An insomniac office worker...",
+        "posterUrl": "https://image.tmdb.org/t/p/w500/pB8BM7pdSp6B6Ih7QZ4DrQ3PmJK.jpg",
+        "backdropUrl": "https://image.tmdb.org/t/p/w1280/hZkgoQYus5vegHoetLkCJzb17zJ.jpg",
+        "rating": 8.4,
+        "voteCount": 27500,
+        "releaseDate": "1999-10-15",
+        "genres": [
+          { "id": 18, "name": "Drama" },
+          { "id": 53, "name": "Thriller" }
+        ]
+      }
+    ],
+    "total": 1
+  },
+  "timestamp": "2026-09-12T06:00:00.000Z"
+}
+```
+
+---
+
+### 7. Check Wishlist Status
 ```http
 GET /api/wishlist/550
 ```
@@ -119,11 +577,13 @@ GET /api/wishlist/550
     "movieId": 550,
     "isInWishlist": true
   },
-  "timestamp": "2026-09-12T05:00:15.000Z"
+  "timestamp": "2026-09-12T06:00:00.000Z"
 }
 ```
 
-### 4. Remove Movie from Wishlist
+---
+
+### 8. Remove Movie from Wishlist
 ```http
 DELETE /api/wishlist/550
 ```
@@ -136,67 +596,17 @@ DELETE /api/wishlist/550
     "removed": true
   },
   "message": "Movie removed from wishlist",
-  "timestamp": "2026-09-12T05:00:20.000Z"
+  "timestamp": "2026-09-12T06:00:00.000Z"
 }
 ```
 
 ---
 
-## ⚡ Performance Strategy (Step 9)
+## 🛡️ Centralized Error Handling
 
-### 1. In-Memory Caching Topology & TTL Decisions
-We implement a lightweight, bounded in-memory cache ([`InMemoryCache<T>`](file:///d:/shivam/projects/Movie%20Discovery%20App/server/src/utils/cache.ts)) directly inside the service layer to dramatically reduce latency and protect external provider rate limits:
+The application maps internal exceptions to domain-level status codes and envelopes via `src/middleware/error.middleware.ts`.
 
-| Resource | Cache Key Pattern | TTL | Max Capacity | Eviction Policy | Rationale |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Movie Genres** | `genres:en-US` | **1 hour** (3600s) | 10 entries | LRU | Static reference taxonomy; changes once every few years. |
-| **Movie Details** | `movie:{id}` | **10 minutes** (600s) | 500 entries | LRU | Detailed overviews, runtimes, and release dates change very rarely. |
-| **Movie Listings** | `movies:search={s}:genre={g}:year={y}:sort={sort}:page={p}:limit={l}` | **2 minutes** (120s) | 200 entries | LRU | Balances fresh discovery results with high reuse during active browsing. |
-
-### 2. In-Flight Request Coalescing (Stampede / Dog-Piling Prevention)
-When multiple client requests simultaneously ask for the exact same uncached movie ID (e.g. 10 users requesting `GET /api/movies/550` simultaneously on a cold cache), [`InMemoryCache.getOrSet()`](file:///d:/shivam/projects/Movie%20Discovery%20App/server/src/utils/cache.ts) shares a single in-flight Promise across all 10 callers. Only **1 upstream network request** is dispatched to TMDB; all 10 callers resolve concurrently when that single Promise fulfills.
-
-### 3. Error Non-Caching Policy
-Upstream network failures, timeouts, and rate limits are **never cached**. If TMDB temporarily drops a packet, the error is handled immediately, allowing subsequent requests to recover without waiting for a cache TTL to expire.
-
-### 4. Strict Pagination & Query Protection
-- `page >= 1` (integer)
-- `limit >= 1` and `limit <= 20` (max bounded to 20 to protect memory and align with TMDB natural page sizes)
-- Search queries are trimmed; empty strings/whitespace are converted to discovery mode instead of firing wasteful blank search requests.
-- Excessive limits (e.g., `limit=100000`) are rejected at the edge with HTTP `400 Bad Request`.
-
-### 5. HTTP Response Compression & Observability
-- **Gzip/Deflate Compression**: Integrated `compression` middleware compresses JSON payloads over the wire.
-- **Request Duration Logging**: Lightweight `requestLoggerMiddleware` measures and logs execution latency (`⚡ [HTTP] GET /api/movies -> 200 (1.85ms)`).
-
----
-
-## 🛡️ Error Handling Architecture (Step 10)
-
-```text
-Request (Invalid / Edge-Case / Malformed)
-   │
-   ▼
-[Zod Schemas]        ──► (Validation failure: 400 INVALID_REQUEST)
-   │
-   ▼
-[Controllers]        ──► (Thin wrapper, delegates to Services)
-   │
-   ▼
-[Services]           ──► (Business logic & domain error throws)
-   │
-   ├── Database Ops  ──► [Prisma] ──► (P2002: 409 MOVIE_ALREADY_IN_WISHLIST, P2025: 404, Fatal: 500 DATABASE_ERROR)
-   └── Provider Ops  ──► [TMDB]   ──► (404: MOVIE_NOT_FOUND, 429: MOVIE_SERVICE_RATE_LIMITED, Timeout: 503 MOVIE_SERVICE_UNAVAILABLE)
-   │
-   ▼
-[Central Error Middleware]
-   │
-   ▼
-[Standard Error Envelope]
-```
-
-### Standardized Error Envelope
-Every error returned by the API follows the exact same schema:
+### Standardized Error Format
 ```json
 {
   "success": false,
@@ -204,29 +614,80 @@ Every error returned by the API follows the exact same schema:
     "code": "MOVIE_NOT_FOUND",
     "message": "Movie was not found."
   },
-  "timestamp": "2026-09-12T05:30:00.000Z"
+  "timestamp": "2026-09-12T06:00:00.000Z"
 }
 ```
 
 ### Domain Error Code Reference
+
 | HTTP Status | Error Code | Description |
 | :--- | :--- | :--- |
-| `400 Bad Request` | `INVALID_REQUEST` | Validation error (e.g. `limit > 20`, negative page, out-of-range year, unwhitelisted sort). |
-| `400 Bad Request` | `INVALID_MOVIE_ID` | Non-numeric or non-positive movie ID passed in route parameter. |
-| `404 Not Found` | `MOVIE_NOT_FOUND` | Upstream movie ID does not exist in catalog. |
+| `400 Bad Request` | `INVALID_REQUEST` | Query parameter, route parameter, or request body failed validation. |
+| `400 Bad Request` | `INVALID_MOVIE_ID` | Non-numeric or non-positive ID passed in URL route parameters. |
+| `404 Not Found` | `MOVIE_NOT_FOUND` | Upstream movie ID does not exist in the provider catalog. |
 | `404 Not Found` | `WISHLIST_ITEM_NOT_FOUND` | Target movie ID does not exist in the user's wishlist during deletion. |
-| `404 Not Found` | `ROUTE_NOT_FOUND` | Requested HTTP route path is unhandled (`GET /api/unknown`). |
+| `404 Not Found` | `ROUTE_NOT_FOUND` | Unhandled HTTP route path (`GET /api/unknown-route`). |
 | `409 Conflict` | `MOVIE_ALREADY_IN_WISHLIST` | Movie is already present in wishlist (enforced by DB unique constraint). |
-| `429 Too Many Requests` | `MOVIE_SERVICE_RATE_LIMITED` | TMDB external provider rate limit threshold exceeded. |
-| `500 Server Error` | `DATABASE_ERROR` | Internal database failure (Prisma internals sanitized). |
-| `500 Server Error` | `INTERNAL_SERVER_ERROR` | Generic fallback for unexpected runtime exceptions (stack traces suppressed). |
+| `413 Payload Too Large` | `PAYLOAD_TOO_LARGE` | Request payload exceeds the 10KB body limit. |
+| `429 Too Many Requests` | `RATE_LIMITED` | Client exceeded the allowed request threshold. |
+| `500 Server Error` | `DATABASE_ERROR` | PostgreSQL database connection or query failure (internals sanitized). |
+| `500 Server Error` | `INTERNAL_SERVER_ERROR` | Generic fallback for unexpected exceptions (stack traces suppressed). |
 | `503 Service Unavailable`| `MOVIE_SERVICE_UNAVAILABLE` | External movie provider timeout or network unreachable. |
 
 ---
 
-## 🧪 Testing Architecture & Multi-Layer Test Strategy
+## ⚡ Caching & Performance Architecture
 
-The backend follows a 5-layer testing strategy that verifies behavior across all levels without requiring real external TMDB API credentials during CI/CD.
+The backend includes a custom generic in-memory cache (`src/utils/cache.ts`) designed specifically to optimize TMDB API quota consumption and minimize database latency.
+
+```
+Incoming Request
+      │
+      ▼
+Check In-Memory Cache (Key: "movies:search=:genre=28:year=2024:sort=popularity:page=1:limit=20")
+      │
+      ├── [Cache Hit] ──► Return cached JSON immediately (~1ms)
+      │
+      └── [Cache Miss]
+             │
+             ├── Check in-flight request map (Coalescing)
+             │      └── [In-Flight Found] ──► Await existing Promise (prevents duplicate fetch)
+             │
+             └── [Execute Upstream Provider]
+                    │
+                    ├── [Success] ──► Store in Cache with TTL & return
+                    │
+                    └── [Failure] ──► DO NOT CACHE (Instant recovery on next call)
+```
+
+### Cache Configuration Policies
+
+| Cache Name | Scope | TTL | Max Capacity | Eviction Policy |
+| :--- | :--- | :--- | :---: | :--- |
+| `GenreCache` | Taxonomy (`/api/movies/genres`) | 1 Hour | 10 entries | LRU (Least Recently Used) |
+| `MovieDetailCache` | Single Movie Metadata (`/api/movies/:id`) | 10 Minutes | 500 entries | LRU (Least Recently Used) |
+| `MovieListCache` | Discovery & Search (`/api/movies?...`) | 2 Minutes | 200 entries | LRU (Least Recently Used) |
+
+---
+
+## 🔒 Security & Production Readiness
+
+1. **OWASP Security Headers**: Configured via `src/middleware/security.middleware.ts`:
+   - `X-Content-Type-Options: nosniff` (prevents MIME confusion attacks)
+   - `X-Frame-Options: DENY` (prevents clickjacking)
+   - `Referrer-Policy: strict-origin-when-cross-origin`
+   - `Content-Security-Policy: default-src 'self'; frame-ancestors 'none';`
+   - `X-Powered-By` header explicitly stripped.
+2. **Request Body Minimization**: `express.json({ limit: "10kb" })` protects against payload memory exhaustion.
+3. **Search Length Bounds**: Zod `.max(100)` prevents CPU exhaustion during search regex/substring matching.
+4. **In-Memory Rate Limiting**: Bounded sliding-window rate limiting (`100 req / 15 min` for general API; `30 req / 1 min` for wishlist mutations).
+5. **Database Security**: 100% parameterized queries via Prisma ORM; zero raw SQL string concatenation.
+6. **Provider Credentials Isolation**: TMDB credentials exist exclusively on the server and are never exposed to clients.
+7. **Zero Secret Leakage**: Error envelopes never expose stack traces, database URLs, passwords, or provider tokens.
+
+---
+
+## 🧪 Testing Strategy (6 Layers / 71 Tests)
 
 ```text
 ┌────────────────────────────────────────────────────────┐
@@ -268,54 +729,6 @@ The backend follows a 5-layer testing strategy that verifies behavior across all
 
 ---
 
-## 🛡️ Security Considerations & Production Readiness
-
-### 1. Secrets Management
-* Sensitive credentials (`DATABASE_URL`, `TMDB_API_KEY`, `TMDB_ACCESS_TOKEN`) are loaded via `dotenv` and validated at startup using Zod in `src/config/env.ts`.
-* `.env` is strictly listed in `.gitignore` and never committed.
-* `.env.example` contains only non-sensitive template placeholders.
-
-### 2. HTTP Security Headers
-* `X-Content-Type-Options: nosniff`: Prevents browsers from MIME-sniffing malicious uploads.
-* `X-Frame-Options: DENY`: Defends against clickjacking by prohibiting iframe embedding.
-* `Referrer-Policy: strict-origin-when-cross-origin`: Restricts sensitive URL parameter leakage in referrer headers.
-* `Content-Security-Policy`: Modern defense restricting resource loading.
-* `X-Powered-By`: Explicitly removed (`app.disable("x-powered-by")`) to eliminate framework fingerprinting.
-
-### 3. Request Body Size & Input Bounds
-* Body parser limit constrained to `10kb` (`express.json({ limit: "10kb" })`), rejecting oversized requests with `413 PAYLOAD_TOO_LARGE`.
-* Strict Zod boundaries on all query and route parameters:
-  - `search`: Trimmed and capped at 100 characters.
-  - `limit`: Capped at 20 items per page.
-  - `year`: Bounded between 1888 and current year + 5.
-  - `sort`: Strictly whitelisted against `"popularity" | "rating" | "release_date" | "title"`.
-
-### 4. Application Rate Limiting
-* Public endpoints are protected against scraping and denial-of-service via an in-memory sliding-window rate limiter:
-  - **General API**: 100 requests per 15 minutes per IP.
-  - **Wishlist Mutations**: 30 requests per minute per IP.
-  - Returns standard HTTP `429 Too Many Requests` with `Retry-After` header and `RATE_LIMITED` code.
-
-### 5. Database Security & SQL Injection Prevention
-* All database interactions utilize Prisma ORM parameterized queries.
-* Zero raw, concatenated SQL strings are used anywhere in the codebase.
-* Unique database constraints (`@unique` on `movieId`) atomically prevent race conditions and duplicate wishlist entries.
-
-### 6. External Provider Isolation
-* Third-party TMDB API keys exist exclusively on the backend server.
-* The frontend only communicates with application-owned API endpoints.
-* Axios timeouts are strictly enforced (8000ms) to prevent hanging server connections.
-
-### 7. Zero Information Leakage
-* Production error responses strictly return `{ success: false, error: { code, message } }`.
-* Stack traces, database connection URLs, internal SQL tables, and Axios config dumps are never exposed to clients.
-
-### 8. Architectural Limitations
-* **Authentication**: Authentication (JWT, sessions, multi-user accounts) is deliberately omitted per the assignment specification. The wishlist operates at an application level.
-* **In-Memory Cache & Limiter**: The in-memory LRU cache and rate limiter are optimized for single-instance deployments. For horizontally scaled multi-instance clusters, a distributed store (e.g. Redis) would be introduced.
-
----
-
 ## 🛠️ Developer Scripts
 
 | Command | Purpose |
@@ -330,6 +743,7 @@ The backend follows a 5-layer testing strategy that verifies behavior across all
 | `npm run dev` | Start development server with hot-reload (`ts-node-dev`). |
 | `npm run typecheck` | Run strict TypeScript compiler verification (`tsc --noEmit`). |
 | `npm run build` | Compile TypeScript into production JavaScript bundle (`dist/`). |
+| `npm start` | Run compiled production bundle (`node dist/server.js`). |
 | `npm run test:errors` | Execute Step 10 error handling, edge cases, and normalization test suite. |
 | `npm run test:performance` | Execute Step 9 caching, TTL, LRU eviction, request coalescing, and bounds test suite. |
 | `npm run test:wishlist` | Execute the end-to-end automated Wishlist lifecycle test suite. |
@@ -338,6 +752,52 @@ The backend follows a 5-layer testing strategy that verifies behavior across all
 | `npm run test:tmdb` | Test TMDB external client and timeout handling. |
 | `npm run test:db` | Test direct PostgreSQL connection and unique constraints. |
 | `npm run db:generate` | Regenerate Prisma Client types from `schema.prisma`. |
+| `npm run db:migrate` | Run Prisma database migrations against PostgreSQL. |
 | `npm run db:studio` | Launch visual database browser at `http://localhost:5555`. |
 | `npm run db:seed` | Seed database with sample wishlist records (`550`, `680`, `272`). |
 
+---
+
+## 💡 Technical Decisions & Trade-Offs
+
+### 1. Why Node.js + Express + TypeScript?
+Express provides a lightweight, minimalist HTTP foundation. TypeScript adds compile-time type safety across domain models, controller inputs, and database queries, preventing runtime `TypeError` bugs and improving developer velocity.
+
+### 2. Why Prisma ORM over raw SQL?
+Prisma provides type-safe database queries, automated SQL migrations, and prepared-statement parameterization by default. It eliminates SQL injection vulnerabilities while ensuring that schema modifications remain tracked in version control.
+
+### 3. Why Provider Abstraction?
+Decoupling the movie data provider behind `IMovieProvider` allows local development and CI/CD pipelines to run against `MockMovieProvider` without hitting TMDB rate limits or requiring secret credentials. Enabling TMDB is a one-line `.env` configuration change.
+
+### 4. Why In-Memory Cache instead of Redis?
+For an internship project deployed as a single-instance service, an in-memory LRU cache eliminates external infrastructure overhead while providing sub-millisecond lookups, TTL expirations, and request coalescing.
+
+### 5. Why no User Authentication?
+The assignment specification explicitly focuses on movie discovery, search/filtering, provider abstraction, caching, and persistence without requiring user accounts or authentication. Implementing mock auth or unsecured JWTs would introduce unnecessary complexity and distract from core requirements.
+
+---
+
+## ⚠️ Known Limitations & Future Roadmap
+
+### Realistic Limitations
+* **Single-Instance In-Memory State**: Cache and rate-limiter state reside in process memory. If the backend is horizontally scaled across multiple instances, a distributed store (e.g. Redis) is required.
+* **Application-Level Wishlist**: Without user authentication, all clients interact with a shared application-level wishlist.
+* **No Advanced DDoS/WAF**: Layer 7 DDoS mitigation, IP geo-blocking, and bot detection are expected to be handled by edge reverse proxies (e.g. Cloudflare / Nginx).
+
+### Future Roadmap
+1. **User Authentication**: Introduce OAuth 2.0 / JWT session cookies and multi-tenant `userId` relations on the Wishlist model.
+2. **Distributed Redis Caching**: Replace in-memory caching and rate limiting with Redis cluster support.
+3. **Advanced Movie Recommendations**: Implement cosine similarity / collaborative filtering for movie recommendations.
+4. **React Frontend**: Implement modern React + Vite + TypeScript frontend with rich UI and debounce searching.
+
+---
+
+## 🤖 AI Usage Disclosure
+
+In compliance with the assignment guidelines, AI tools (Google Antigravity / Gemini) were used during development for:
+* Architectural planning and design pattern review.
+* Scaffolding boilerplate TypeScript interfaces and Zod schemas.
+* Generating edge-case test suites and error simulation providers.
+* Formatting comprehensive markdown documentation.
+
+**Developer Role**: All generated architecture, business logic, database migrations, security configurations, and test suites were reviewed, validated, modified, and verified through manual and automated test execution.

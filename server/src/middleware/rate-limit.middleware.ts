@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
+import { env } from "../config/env";
 import { AppError } from "../utils/app-error";
 
 export interface RateLimiterOptions {
@@ -91,16 +92,150 @@ export class InMemoryRateLimiter {
   }
 }
 
-// 1. General API Rate Limiter: 100 requests per 15 minutes per IP
+/**
+ * Advanced Rate Limiter with Exponential Backoff for Sensitive / Auth Routes.
+ * Combines per-IP and per-account limits with progressive backoff delays
+ * rather than hard permanent lockouts.
+ */
+export interface ExponentialBackoffOptions {
+  windowMs: number;
+  maxAttempts: number;
+  backoffBaseMs: number; // Base delay in ms (e.g. 1000ms = 1s, doubles per failed attempt)
+  maxBackoffMs?: number; // Cap maximum backoff delay (e.g. 15 minutes)
+  accountKeyExtractor?: (req: Request) => string | undefined;
+}
+
+interface AuthAttemptRecord {
+  attempts: number;
+  lastAttemptTime: number;
+  blockedUntil: number;
+  windowResetTime: number;
+}
+
+export class ExponentialBackoffRateLimiter {
+  private readonly windowMs: number;
+  private readonly maxAttempts: number;
+  private readonly backoffBaseMs: number;
+  private readonly maxBackoffMs: number;
+  private readonly accountKeyExtractor?: (req: Request) => string | undefined;
+  private readonly records: Map<string, AuthAttemptRecord> = new Map();
+  private cleanupTimer: NodeJS.Timeout | null = null;
+
+  constructor(options: ExponentialBackoffOptions) {
+    this.windowMs = options.windowMs;
+    this.maxAttempts = options.maxAttempts;
+    this.backoffBaseMs = options.backoffBaseMs;
+    this.maxBackoffMs = options.maxBackoffMs ?? 15 * 60 * 1000;
+    this.accountKeyExtractor = options.accountKeyExtractor;
+
+    this.cleanupTimer = setInterval(() => this.cleanup(), 60 * 1000);
+    if (this.cleanupTimer.unref) {
+      this.cleanupTimer.unref();
+    }
+  }
+
+  private cleanup(): void {
+    const now = Date.now();
+    for (const [key, record] of this.records.entries()) {
+      if (now > record.windowResetTime && now > record.blockedUntil) {
+        this.records.delete(key);
+      }
+    }
+  }
+
+  public recordFailure(key: string): number {
+    const now = Date.now();
+    const record = this.records.get(key) || {
+      attempts: 0,
+      lastAttemptTime: now,
+      blockedUntil: 0,
+      windowResetTime: now + this.windowMs,
+    };
+
+    if (now > record.windowResetTime) {
+      record.attempts = 1;
+      record.windowResetTime = now + this.windowMs;
+    } else {
+      record.attempts++;
+    }
+
+    record.lastAttemptTime = now;
+
+    if (record.attempts >= this.maxAttempts) {
+      // Exponential backoff: backoffBase * 2^(attempts - maxAttempts)
+      const exponent = record.attempts - this.maxAttempts;
+      const backoffDuration = Math.min(
+        this.backoffBaseMs * Math.pow(2, exponent),
+        this.maxBackoffMs
+      );
+      record.blockedUntil = now + backoffDuration;
+    }
+
+    this.records.set(key, record);
+    return record.blockedUntil > now ? Math.ceil((record.blockedUntil - now) / 1000) : 0;
+  }
+
+  public resetKey(key: string): void {
+    this.records.delete(key);
+  }
+
+  public middleware() {
+    return (req: Request, res: Response, next: NextFunction): void => {
+      const now = Date.now();
+      const ip = req.ip || req.socket.remoteAddress || "unknown-ip";
+      const accountId = this.accountKeyExtractor ? this.accountKeyExtractor(req) : undefined;
+
+      // Check both IP key and Account key
+      const keysToCheck = [`ip:${ip}`];
+      if (accountId) {
+        keysToCheck.push(`acc:${accountId}`);
+      }
+
+      for (const key of keysToCheck) {
+        const record = this.records.get(key);
+        if (record && record.blockedUntil > now) {
+          const remainingSeconds = Math.ceil((record.blockedUntil - now) / 1000);
+          res.setHeader("Retry-After", remainingSeconds);
+          return next(
+            new AppError(
+              `Too many authentication attempts. Please try again in ${remainingSeconds} second(s).`,
+              429,
+              "AUTH_RATE_LIMITED",
+              { retryAfterSeconds: remainingSeconds }
+            )
+          );
+        }
+      }
+
+      return next();
+    };
+  }
+}
+
+// 1. General API Rate Limiter: Configurable (Default: 100 requests per 15 minutes per IP)
 export const generalApiLimiter = new InMemoryRateLimiter({
-  windowMs: 15 * 60 * 1000,
-  maxRequests: 100,
+  windowMs: env.rateLimit.general.windowMs,
+  maxRequests: env.rateLimit.general.maxRequests,
   message: "API rate limit exceeded. Please try again later.",
 });
 
-// 2. Wishlist Mutation Limiter: 30 mutation requests per minute per IP
+// 2. Wishlist Mutation Limiter: Configurable (Default: 30 mutation requests per minute per IP)
 export const wishlistMutationLimiter = new InMemoryRateLimiter({
-  windowMs: 60 * 1000,
-  maxRequests: 30,
+  windowMs: env.rateLimit.wishlist.windowMs,
+  maxRequests: env.rateLimit.wishlist.maxRequests,
   message: "Wishlist modification rate limit exceeded. Please slow down.",
+});
+
+// 3. Auth Route Limiter with Exponential Backoff (Per-IP & Per-Account)
+export const authRateLimiter = new ExponentialBackoffRateLimiter({
+  windowMs: env.rateLimit.auth.windowMs,
+  maxAttempts: env.rateLimit.auth.maxRequests,
+  backoffBaseMs: env.rateLimit.auth.backoffBaseMs,
+  accountKeyExtractor: (req: Request) => {
+    if (req.body && typeof req.body === "object") {
+      const body = req.body as Record<string, unknown>;
+      return (body.email as string) || (body.username as string) || undefined;
+    }
+    return undefined;
+  },
 });
