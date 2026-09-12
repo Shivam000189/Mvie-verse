@@ -1,13 +1,18 @@
 export type AppErrorCode =
+  | "INVALID_REQUEST"
   | "INVALID_MOVIE_ID"
   | "MOVIE_NOT_FOUND"
   | "MOVIE_SERVICE_UNAVAILABLE"
+  | "MOVIE_SERVICE_RATE_LIMITED"
+  | "RATE_LIMITED"
+  | "PAYLOAD_TOO_LARGE"
   | "MOVIE_ALREADY_IN_WISHLIST"
   | "WISHLIST_ITEM_NOT_FOUND"
-  | "DUPLICATE_WISHLIST_ITEM"
-  | "CONFLICT"
+  | "ROUTE_NOT_FOUND"
+  | "DATABASE_ERROR"
   | "VALIDATION_ERROR"
   | "BAD_REQUEST"
+  | "CONFLICT"
   | "INTERNAL_SERVER_ERROR";
 
 export class AppError extends Error {
@@ -32,7 +37,7 @@ export class AppError extends Error {
 
   public static badRequest(
     message: string,
-    code: AppErrorCode = "BAD_REQUEST",
+    code: AppErrorCode = "INVALID_REQUEST",
     details?: unknown
   ): AppError {
     return new AppError(message, 400, code, details);
@@ -46,7 +51,7 @@ export class AppError extends Error {
   }
 
   public static conflict(
-    message = "Resource already exists",
+    message = "Resource conflict",
     code: AppErrorCode = "CONFLICT",
     details?: unknown
   ): AppError {
@@ -58,5 +63,12 @@ export class AppError extends Error {
     code: AppErrorCode = "MOVIE_SERVICE_UNAVAILABLE"
   ): AppError {
     return new AppError(message, 503, code);
+  }
+
+  public static databaseError(
+    message = "Unable to complete the database request.",
+    code: AppErrorCode = "DATABASE_ERROR"
+  ): AppError {
+    return new AppError(message, 500, code);
   }
 }

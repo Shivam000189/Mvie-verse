@@ -43,16 +43,30 @@ export class MovieMapper {
   /**
    * Normalizes a raw TMDB movie item from list/discovery endpoints.
    */
-  public static toMovie(tmdbMovie: TmdbMovie): Movie {
+  public static toMovie(tmdbMovie: Partial<TmdbMovie> | null | undefined): Movie {
+    if (!tmdbMovie) {
+      return {
+        id: 0,
+        title: "Untitled",
+        overview: "",
+        posterUrl: null,
+        backdropUrl: null,
+        rating: 0,
+        voteCount: 0,
+        releaseDate: null,
+        genres: [],
+      };
+    }
+
     const rawRating = typeof tmdbMovie.vote_average === "number" ? tmdbMovie.vote_average : 0;
     const roundedRating = Math.round(rawRating * 10) / 10;
 
     return {
-      id: tmdbMovie.id,
+      id: typeof tmdbMovie.id === "number" ? tmdbMovie.id : 0,
       title: tmdbMovie.title?.trim() || tmdbMovie.original_title?.trim() || "Untitled",
       overview: tmdbMovie.overview?.trim() || "",
-      posterUrl: tmdbService.buildImageUrl(tmdbMovie.poster_path, "w500"),
-      backdropUrl: tmdbService.buildImageUrl(tmdbMovie.backdrop_path, "w780"),
+      posterUrl: tmdbService.buildImageUrl(tmdbMovie.poster_path ?? null, "w500"),
+      backdropUrl: tmdbService.buildImageUrl(tmdbMovie.backdrop_path ?? null, "w780"),
       rating: roundedRating,
       voteCount: typeof tmdbMovie.vote_count === "number" ? tmdbMovie.vote_count : 0,
       releaseDate: tmdbMovie.release_date?.trim() || null,

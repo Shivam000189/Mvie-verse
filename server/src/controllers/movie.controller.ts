@@ -17,7 +17,7 @@ export class MovieController {
         const firstIssue = validation.error.issues[0];
         throw AppError.badRequest(
           firstIssue?.message || "Invalid query parameters",
-          "BAD_REQUEST",
+          "INVALID_REQUEST",
           validation.error.issues
         );
       }

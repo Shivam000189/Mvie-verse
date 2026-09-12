@@ -6,6 +6,6 @@ export const notFoundMiddleware = (req: Request, res: Response): void => {
     res,
     `Route ${req.method} ${req.originalUrl} not found`,
     404,
-    "NOT_FOUND"
+    "ROUTE_NOT_FOUND"
   );
 };

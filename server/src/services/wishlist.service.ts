@@ -26,12 +26,18 @@ export class WishlistService {
         return { items: [], total: 0 };
       }
 
-      // 2. Fetch full movie metadata concurrently via MovieService
-      const moviePromises = savedItems.map((item) =>
-        movieService.getMovieById(item.movieId)
-      );
+      // 2. Fetch full movie metadata with bounded concurrency (max 5 simultaneous requests) via MovieService
+      const CONCURRENCY_LIMIT = 5;
+      const results: PromiseSettledResult<{ movie: Movie }>[] = [];
 
-      const results = await Promise.allSettled(moviePromises);
+      for (let i = 0; i < savedItems.length; i += CONCURRENCY_LIMIT) {
+        const batch = savedItems.slice(i, i + CONCURRENCY_LIMIT);
+        const batchPromises = batch.map((item) =>
+          movieService.getMovieById(item.movieId)
+        );
+        const batchResults = await Promise.allSettled(batchPromises);
+        results.push(...batchResults);
+      }
 
       // 3. Normalize responses with graceful fallback for unavailable provider items
       const items: Movie[] = [];

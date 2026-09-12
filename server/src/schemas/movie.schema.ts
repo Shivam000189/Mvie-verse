@@ -10,6 +10,7 @@ export const movieQuerySchema = z.object({
   search: z
     .string()
     .trim()
+    .max(100, { message: "Search query cannot exceed 100 characters" })
     .optional()
     .transform((val) => (val && val.length > 0 ? val : undefined)),
 
@@ -46,7 +47,7 @@ export const movieQuerySchema = z.object({
     .number({ message: "Limit must be a valid number" })
     .int({ message: "Limit must be an integer" })
     .min(1, { message: "Limit must be at least 1" })
-    .max(100, { message: "Limit cannot exceed 100" })
+    .max(20, { message: "Limit cannot exceed 20" })
     .default(20),
 });
 

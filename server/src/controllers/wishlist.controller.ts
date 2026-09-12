@@ -30,7 +30,7 @@ export class WishlistController {
         const firstIssue = validation.error.issues[0];
         throw AppError.badRequest(
           firstIssue?.message || "Invalid movie ID",
-          "INVALID_MOVIE_ID",
+          "INVALID_REQUEST",
           validation.error.issues
         );
       }

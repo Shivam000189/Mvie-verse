@@ -98,7 +98,7 @@ async function runStep6Tests() {
   // Test 5: Pagination Validation & Limit Protection
   // ----------------------------------------------------
   console.log("\n[Test 5] Testing pagination and limit boundaries...");
-  const validPagination = movieQuerySchema.safeParse({ page: "3", limit: "50" });
+  const validPagination = movieQuerySchema.safeParse({ page: "3", limit: "20" });
   const invalidZeroPage = movieQuerySchema.safeParse({ page: "0" });
   const invalidNegativePage = movieQuerySchema.safeParse({ page: "-2" });
   const invalidLimitExceeded = movieQuerySchema.safeParse({ limit: "100000" });
@@ -106,12 +106,12 @@ async function runStep6Tests() {
   if (
     validPagination.success &&
     validPagination.data.page === 3 &&
-    validPagination.data.limit === 50 &&
+    validPagination.data.limit === 20 &&
     !invalidZeroPage.success &&
     !invalidNegativePage.success &&
     !invalidLimitExceeded.success
   ) {
-    console.log("✅ Pagination bounds PASSED (Accepted positive integers, blocked 0, negative, and excessive limits)");
+    console.log("✅ Pagination bounds PASSED (Accepted positive integers up to 20, blocked 0, negative, and excessive limits)");
   } else {
     console.error("❌ Pagination bounds FAILED!");
   }
